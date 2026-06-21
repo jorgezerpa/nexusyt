@@ -1,65 +1,93 @@
+from dotenv import load_dotenv
 import os
 import re
-import tempfile # securely creates temporary files, then removes it after use
-from fastapi import FastAPI, HTTPException, status
-from pydantic import BaseModel, HttpUrl, field_validator
-import yt_dlp # command line, we use it specifically to download youtube's video audio
-from groq import Groq # Grok whisper to convert audio to text
-from anthropic import Anthropic # generate video summary and posteriorly chat about it -- we pass the groq whisper generated text to this
-from sqlalchemy import create_engine, Column, Integer, String, Text 
+import uuid
+import tempfile
+from fastapi import FastAPI, HTTPException, status, BackgroundTasks
+from pydantic import BaseModel, field_validator
+import yt_dlp
+from groq import Groq
+from anthropic import Anthropic
+from sqlalchemy import create_engine, Column, String, Text
 from sqlalchemy.orm import declarative_base, sessionmaker
 
+load_dotenv() # Loads variables from .env into the system's environment
+
 # ---------------------------------------------------------------------
-# 1. Database Configuration (SQLite)
+# 1. Database Configuration (PostgreSQL)
 # ---------------------------------------------------------------------
-DATABASE_URL = "sqlite:///./nexus.db"
-engine = create_engine(DATABASE_URL, connect_args={"check_same_thread": False})
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine)
+DATABASE_URL = os.getenv("DATABASE_URL")
+
+engine = create_engine(DATABASE_URL)
+SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) # @dev what is this doing? 
 Base = declarative_base()
 
 class VideoRecord(Base):
     __tablename__ = "processed_videos"
 
-    id = Column(Integer, primary_key=True, index=True)
-    url = Column(String, unique=True, index=True)
-    transcript = Column(Text)
-    summary = Column(Text)
+    # UUID as primary key for secure, non-sequential identification
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    # Native YouTube ID for fast existence checks
+    youtube_id = Column(String, unique=True, index=True, nullable=False)
+    url = Column(String, nullable=False)
+    
+    # Status tracking: "processing", "completed", "failed"
+    status = Column(String, default="processing", nullable=False)
+    
+    # Nullable initially, populated once background task finishes
+    transcript = Column(Text, nullable=True)
+    summary = Column(Text, nullable=True)
 
-# Create tables automatically on startup
+# @dev how should I handle this on prd? create apart and just connect?
+# Create tables automatically (For production, use Alembic for migrations)
 Base.metadata.create_all(bind=engine)
 
 # ---------------------------------------------------------------------
-# 2. Pydantic Schemas
+# 2. Pydantic Schemas & Helpers
 # ---------------------------------------------------------------------
+def extract_youtube_id(url: str) -> str:
+    """Extracts the 11-character YouTube video ID from standard URLs."""
+    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
+    if not match:
+        raise ValueError("Could not extract YouTube ID.")
+    return match.group(1)
+
 class ProcessRequest(BaseModel):
     youtube_url: str
 
     @field_validator("youtube_url")
     @classmethod
     def validate_youtube_url(cls, value: str) -> str:
-        # Strict validation for both youtube.com and youtu.be links
         youtube_regex = r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
         if not re.match(youtube_regex, value):
             raise ValueError("Invalid YouTube URL format.")
         return value
 
-class ProcessResponse(BaseModel):
-    transcript: str
-    summary: str
+class ProcessInitResponse(BaseModel):
+    video_id: str
+    status: str
+
+class VideoStatusResponse(BaseModel):
+    status: str
+    video_id: str
+    transcript: str | None = None
+    summary: str | None = None
 
 # ---------------------------------------------------------------------
-# 3. Core Isolated Pipeline Function
+# 3. Core Background Pipeline Function
 # ---------------------------------------------------------------------
-def pipeline_process_video(url: str) -> dict:
+# @dev atually, if not prev registered, it just gonna lose all the work? will not be better to assert for id existance first?
+def pipeline_process_video(record_id: str, url: str):
+    # @dev how is this handling failures on any step?
     """
-    Executes the full pipeline: Audio Extraction -> Transcription -> Summarization -> Storage & Cleanup.
-    Can be called from endpoints, background tasks, or CLI tools.
+    Executes asynchronously. Updates the database record upon completion or failure.
     """
-    # Initialize Clients (Picks up GROQ_API_KEY and ANTHROPIC_API_KEY from environment variables)
-    groq_client = Groq()
+
+    # @dev how to use this? where I'm I setting creds?
+    groq_client = Groq() 
     anthropic_client = Anthropic()
-
     audio_path = None
+    db = SessionLocal()
 
     try:
         # --- Step 1: Audio Extraction ---
@@ -78,7 +106,6 @@ def pipeline_process_video(url: str) -> dict:
         with yt_dlp.YoutubeDL(ydl_opts) as ydl:
             info = ydl.extract_info(url, download=True)
             downloaded_filename = ydl.prepare_filename(info)
-            # Ensure the path reflects the post-processed extension (.m4a)
             base, _ = os.path.splitext(downloaded_filename)
             audio_path = f"{base}.m4a"
 
@@ -89,7 +116,6 @@ def pipeline_process_video(url: str) -> dict:
                 model="whisper-large-v3",
                 response_format="text"
             )
-        # Groq returns standard string when response_format="text"
         raw_transcript = str(transcription_completion).strip()
 
         if not raw_transcript:
@@ -113,65 +139,119 @@ def pipeline_process_video(url: str) -> dict:
         )
         summary_text = message.content[0].text
 
-        # --- Step 4: Storage ---
-        db = SessionLocal()
-        try:
-            # Check if record already exists to avoid duplication
-            existing_record = db.query(VideoRecord).filter(VideoRecord.url == url).first()
-            if existing_record:
-                existing_record.transcript = raw_transcript
-                existing_record.summary = summary_text
-            else:
-                new_record = VideoRecord(url=url, transcript=raw_transcript, summary=summary_text)
-                db.add(new_record)
-            
+        # --- Step 4: Storage Update ---
+        record = db.query(VideoRecord).filter(VideoRecord.id == record_id).first()
+        if record:
+            record.transcript = raw_transcript
+            record.summary = summary_text
+            record.status = "completed"
             db.commit()
-        finally:
-            db.close()
-
-        return {
-            "transcript": raw_transcript,
-            "summary": summary_text
-        }
 
     except Exception as e:
-        # Propagation of errors up to the controller layer
-        raise RuntimeError(f"Pipeline Failed: {str(e)}")
+        # Log the error in production. Mark status as failed so client doesn't poll forever.
+        print(f"Background Task Failed for {record_id}: {str(e)}")
+        record = db.query(VideoRecord).filter(VideoRecord.id == record_id).first()
+        if record:
+            record.status = "failed"
+            db.commit()
 
     finally:
+        db.close()
         # --- Step 5: Cleanup ---
         if audio_path and os.path.exists(audio_path):
             try:
                 os.remove(audio_path)
             except OSError:
-                pass # Prevent crashing if file lock issues happen
+                pass 
 
 # ---------------------------------------------------------------------
 # 4. FastAPI Routing Application
 # ---------------------------------------------------------------------
 app = FastAPI(title="Nexus.yt Video Processing Engine")
 
-@app.get("/")
-async def read_test():
-    return {"test": "test"}
-
-@app.post("/api/process", response_model=ProcessResponse, status_code=status.HTTP_200_OK)
-async def process_video(payload: ProcessRequest):
+@app.post("/api/process", response_model=ProcessInitResponse, status_code=status.HTTP_202_ACCEPTED)
+async def process_video(payload: ProcessRequest, background_tasks: BackgroundTasks): # @dev how is exactly working the background task stuff?
     """
-    Accepts a YouTube URL, runs it through the processing pipeline, 
-    and returns both the raw transcript and a structured summary.
+    Initiates video processing. Returns immediately while AI pipeline runs in the background.
     """
+    db = SessionLocal()
     try:
-        # Executing the isolated pipeline function
-        result = pipeline_process_video(payload.youtube_url)
-        return result
-    except RuntimeError as pipeline_err:
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail=str(pipeline_err)
+        yt_id = extract_youtube_id(payload.youtube_url)
+        
+        # Check if we already have this video in the database
+        existing_record = db.query(VideoRecord).filter(VideoRecord.youtube_id == yt_id).first()
+        
+        if existing_record:
+            # Re-trigger background task if it failed previously
+            if existing_record.status == "failed":
+                existing_record.status = "processing"
+                db.commit() # @dev what is this doing?
+                background_tasks.add_task(pipeline_process_video, existing_record.id, payload.youtube_url)
+            
+            return {"video_id": existing_record.id, "status": existing_record.status}
+
+        # If new, create record and spawn background task
+        new_record = VideoRecord(
+            youtube_id=yt_id, 
+            url=payload.youtube_url, 
+            status="processing"
         )
+        db.add(new_record)
+        db.commit()
+        db.refresh(new_record) # @dev what does this?
+
+        background_tasks.add_task(pipeline_process_video, new_record.id, payload.youtube_url) # @dev what happen if this spawn fails?
+
+        return {"video_id": new_record.id, "status": new_record.status}
+
     except Exception as general_err:
         raise HTTPException(
             status_code=status.HTTP_400_BAD_REQUEST,
-            detail=f"An unexpected error occurred: {str(general_err)}"
+            detail=f"An error occurred: {str(general_err)}"
         )
+    finally:
+        db.close()
+
+
+@app.get("/api/video/{video_id}", response_model=VideoStatusResponse)
+async def get_video_status(video_id: str):
+    """
+    Poll this endpoint to check the status of the video and retrieve AI data once completed.
+    """
+    db = SessionLocal()
+    try:
+        record = db.query(VideoRecord).filter(VideoRecord.id == video_id).first()
+        
+        if not record:
+            raise HTTPException(
+                status_code=status.HTTP_404_NOT_FOUND,
+                detail="Video ID not found."
+            )
+
+        # If it's still processing or failed, return just the status
+        if record.status in ["processing", "failed"]:
+            return {
+                "video_id": record.id,
+                "status": record.status
+            }
+
+        # If completed, return everything
+        return {
+            "status": record.status,
+            "video_id": record.id,
+            "transcript": record.transcript,
+            "summary": record.summary
+        }
+    finally:
+        db.close()
+
+
+'''
+ToDo:
+- Instead of handling a global videos register, make a key-pair for each userId-video AKA generate again -> to evaluate this idea
+- Create a new endpoint to return the list of user-videos -> so I can show on frontend the list of requested videos among status -> to evaluate, beacause I can keep this on the user's browser 
+- Get credentials for third party tools
+- Build UI
+
+Notice: By now, "userId" is any kind of browser identification, because probably i will be storing so much data on local storage. In near future, we'll implement a fully working users management system, to also then incorporate stripe (probably use Supabase for all of this)
+'''

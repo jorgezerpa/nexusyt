@@ -9,9 +9,9 @@ from pydantic import BaseModel, field_validator
 import yt_dlp
 from groq import Groq
 from anthropic import Anthropic
-from sqlalchemy import create_engine, Column, String, Text, DateTime
+from sqlalchemy import create_engine, Column, String, Text, DateTime, ForeignKey
 from sqlalchemy.sql import func # handle server-side timestamps
-from sqlalchemy.orm import declarative_base, sessionmaker
+from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import jwt
 from datetime import datetime
 
@@ -44,6 +44,24 @@ class VideoRecord(Base):
     summary = Column(Text, nullable=True)
 
     created_at  = Column(DateTime(timezone=True), server_default=func.now(), index=True) # @dev is absolute UNIX time for this
+
+    messages = relationship("ChatMessage", back_populates="video", cascade="all, delete-orphan")
+
+
+class ChatMessage(Base):
+    __tablename__ = "chat_messages"
+
+    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
+    video_id = Column(String, ForeignKey("processed_videos.id"), index=True, nullable=False)
+    role = Column(String, nullable=False)  # "user" or "assistant"
+    content = Column(Text, nullable=False)
+    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
+
+    # NEW: Relationship reference back to the parent video
+    video = relationship("VideoRecord", back_populates="messages")
+
+
+
 
 # @dev how should I handle this on prd? create apart and just connect?
 # Create tables automatically (For production, use Alembic for migrations)
@@ -128,6 +146,15 @@ class VideoListResponse(BaseModel):
     page: int
     limit: int
     items: list[VideoListItemResponse]
+
+
+class ChatRequest(BaseModel):
+    message: str
+
+
+class ChatResponse(BaseModel):
+    role: str
+    content: str
 
 
 # ---------------------------------------------------------------------
@@ -353,6 +380,74 @@ async def get_user_videos(
             "limit": limit,
             "items": items
         }
+    finally:
+        db.close()
+
+
+
+@app.post("/api/video/{video_id}/chat", response_model=ChatResponse)
+async def chat_with_video(
+    video_id: str,
+    payload: ChatRequest,
+    user_id: str = Depends(get_current_user_id)
+):
+    """
+    Interacts with the cheap Claude-3-Haiku model about a processed video's context.
+    """
+    db = SessionLocal()
+    anthropic_client = Anthropic()
+
+    try:
+        # Verify the record exists, belongs to the user, and is fully completed
+        record = db.query(VideoRecord).filter(VideoRecord.id == video_id, VideoRecord.user_id == user_id).first()
+        if not record:
+            raise HTTPException(status_code=status.HTTP_404_NOT_FOUND, detail="Video not found.")
+        if record.status != "completed":
+            raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="Video context is not ready for chat.")
+
+        # Save the user's incoming message to the database first
+        user_msg = ChatMessage(video_id=video_id, role="user", content=payload.message)
+        db.add(user_msg)
+        db.commit()
+
+        # Fetch historic conversation thread ordered by time to maintain dialog integrity
+        history = db.query(ChatMessage).filter(ChatMessage.video_id == video_id).order_by(ChatMessage.created_at.asc()).all()
+
+        # Build Anthropic message payload format from db history records
+        formatted_messages = [
+            {"role": msg.role, "content": msg.content} for msg in history
+        ]
+
+        # Structure the system prompt injecting the raw transcript text context
+        system_prompt = (
+            "You are a helpful AI assistant. You are answering questions exclusively about a video transcript "
+            "provided below. Rely only on the clear facts mentioned. If the information is not in the transcript, "
+            "gently state that you cannot find it.\n\n"
+            f"--- VIDEO TRANSCRIPT ---\n{record.transcript}"
+        )
+
+        # Call Anthropic using the fast, cost-effective Haiku model
+        response = anthropic_client.messages.create(
+            model="claude-3-haiku-20240307",
+            max_tokens=800,
+            temperature=0.5,
+            system=system_prompt,
+            messages=formatted_messages
+        )
+        ai_reply = response.content[0].text
+
+        # Persist the generated assistant response to database logs
+        assistant_msg = ChatMessage(video_id=video_id, role="assistant", content=ai_reply)
+        db.add(assistant_msg)
+        db.commit()
+
+        return {"role": "assistant", "content": ai_reply}
+
+    except Exception as chat_err:
+        raise HTTPException(
+            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
+            detail=f"Chat generation error: {str(chat_err)}"
+        )
     finally:
         db.close()
 

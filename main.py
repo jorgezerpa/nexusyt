@@ -1,81 +1,26 @@
 from dotenv import load_dotenv
-import os
-import re
-import uuid
-import tempfile
 from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
-from pydantic import BaseModel, field_validator
-import yt_dlp
-from groq import Groq
 from anthropic import Anthropic
-from sqlalchemy import create_engine, Column, String, Text, DateTime, ForeignKey
-from sqlalchemy.sql import func # handle server-side timestamps
-from sqlalchemy.orm import declarative_base, sessionmaker, relationship
 import jwt
-from datetime import datetime
+##
+from database import SessionLocal
+from models import ChatMessage, VideoRecord
+from schemas import ProcessRequest, ProcessInitResponse, VideoListResponse, VideoStatusResponse, ChatRequest, ChatResponse
+from helpers import extract_youtube_id
+from core.pipeline import pipeline_process_video
 
 load_dotenv() # Loads variables from .env into the system's environment
 
 # ---------------------------------------------------------------------
-# 1. Database Configuration (PostgreSQL)
-# ---------------------------------------------------------------------
-DATABASE_URL = os.getenv("DATABASE_URL")
-
-engine = create_engine(DATABASE_URL)
-SessionLocal = sessionmaker(autocommit=False, autoflush=False, bind=engine) # @dev what is this doing? 
-Base = declarative_base()
-
-class VideoRecord(Base):
-    __tablename__ = "processed_videos"
-
-    # UUID as primary key for secure, non-sequential identification
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
-    user_id  = Column(String, index=True, nullable=False) # @dev if implement multiple providers, this id could be repeated, so users can get cross-generation list -> found a solution @important 
-    # Native YouTube ID for fast existence checks
-    youtube_id = Column(String, unique=True, index=True, nullable=False)
-    url = Column(String, nullable=False)
-    
-    # Status tracking: "processing", "completed", "failed"
-    status = Column(String, default="processing", nullable=False)
-    
-    # Nullable initially, populated once background task finishes
-    transcript = Column(Text, nullable=True)
-    summary = Column(Text, nullable=True)
-
-    created_at  = Column(DateTime(timezone=True), server_default=func.now(), index=True) # @dev is absolute UNIX time for this
-
-    messages = relationship("ChatMessage", back_populates="video", cascade="all, delete-orphan")
-
-
-class ChatMessage(Base):
-    __tablename__ = "chat_messages"
-
-    id = Column(String, primary_key=True, default=lambda: str(uuid.uuid4()), index=True)
-    video_id = Column(String, ForeignKey("processed_videos.id"), index=True, nullable=False)
-    role = Column(String, nullable=False)  # "user" or "assistant"
-    content = Column(Text, nullable=False)
-    created_at = Column(DateTime(timezone=True), server_default=func.now(), index=True)
-
-    # NEW: Relationship reference back to the parent video
-    video = relationship("VideoRecord", back_populates="messages")
-
-
-
-
-# @dev how should I handle this on prd? create apart and just connect?
-# Create tables automatically (For production, use Alembic for migrations)
-Base.metadata.create_all(bind=engine)
-
-
-# ---------------------------------------------------------------------
-# 1.2. Authentication & Verification Dependency
+# 0. Route dependencies
 # ---------------------------------------------------------------------
 security_scheme = HTTPBearer()
 
 # @dev try to understand this syntax on the function params
 def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(security_scheme)) -> str:
     """
+    Authentication & Verification Dependency.
     Extracts the Google ID token from the Bearer header and decodes the user identity.
     """
     token = credentials.credentials
@@ -100,156 +45,8 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(secu
 
 
 
-
 # ---------------------------------------------------------------------
-# 2. Pydantic Schemas & Helpers
-# ---------------------------------------------------------------------
-def extract_youtube_id(url: str) -> str:
-    """Extracts the 11-character YouTube video ID from standard URLs."""
-    match = re.search(r"(?:v=|\/)([0-9A-Za-z_-]{11}).*", url)
-    if not match:
-        raise ValueError("Could not extract YouTube ID.")
-    return match.group(1)
-
-class ProcessRequest(BaseModel):
-    youtube_url: str
-
-    @field_validator("youtube_url")
-    @classmethod
-    def validate_youtube_url(cls, value: str) -> str:
-        youtube_regex = r"^(https?://)?(www\.)?(youtube\.com|youtu\.be)/.+"
-        if not re.match(youtube_regex, value):
-            raise ValueError("Invalid YouTube URL format.")
-        return value
-
-class ProcessInitResponse(BaseModel):
-    video_id: str
-    status: str
-
-class VideoStatusResponse(BaseModel):
-    status: str
-    video_id: str
-    transcript: str | None = None
-    summary: str | None = None
-
-class VideoListItemResponse(BaseModel):
-    id: str
-    url: str
-    status: str
-    created_at: datetime # Directly maps the Python datetime object
-
-    class Config:
-        from_attributes = True # @dev what is this?
-
-class VideoListResponse(BaseModel):
-    total_count: int
-    page: int
-    limit: int
-    items: list[VideoListItemResponse]
-
-
-class ChatRequest(BaseModel):
-    message: str
-
-
-class ChatResponse(BaseModel):
-    role: str
-    content: str
-
-
-# ---------------------------------------------------------------------
-# 3. Core Background Pipeline Function
-# ---------------------------------------------------------------------
-# @dev atually, if not prev registered, it just gonna lose all the work? will not be better to assert for id existance first?
-def pipeline_process_video(record_id: str, url: str):
-    # @dev how is this handling failures on any step?
-    """
-    Executes asynchronously. Updates the database record upon completion or failure.
-    """
-
-    # @dev how to use this? where I'm I setting creds?
-    groq_client = Groq() 
-    anthropic_client = Anthropic()
-    audio_path = None
-    db = SessionLocal()
-
-    try:
-        # --- Step 1: Audio Extraction ---
-        temp_dir = tempfile.gettempdir()
-        ydl_opts = {
-            'format': 'm4a/bestaudio/best',
-            'outtmpl': os.path.join(temp_dir, '%(id)s.%(ext)s'),
-            'postprocessors': [{
-                'key': 'FFmpegExtractAudio',
-                'preferredcodec': 'm4a',
-            }],
-            'quiet': True,
-            'no_warnings': True,
-        }
-
-        with yt_dlp.YoutubeDL(ydl_opts) as ydl:
-            info = ydl.extract_info(url, download=True)
-            downloaded_filename = ydl.prepare_filename(info)
-            base, _ = os.path.splitext(downloaded_filename)
-            audio_path = f"{base}.m4a"
-
-        # --- Step 2: Transcription via Groq Whisper ---
-        with open(audio_path, "rb") as file:
-            transcription_completion = groq_client.audio.transcriptions.create(
-                file=(os.path.basename(audio_path), file.read()),
-                model="whisper-large-v3",
-                response_format="text"
-            )
-        raw_transcript = str(transcription_completion).strip()
-
-        if not raw_transcript:
-            raise Exception("Whisper returned an empty transcript.")
-
-        # --- Step 3: Summarization via Claude ---
-        system_prompt = (
-            "You are an expert content analyzer. Provide a high-quality, professional, "
-            "and structured Markdown summary of the provided video transcript. Use clean headers, "
-            "bullet points, and bold terms for scannability."
-        )
-        
-        message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
-            max_tokens=1500,
-            temperature=0.3,
-            system=system_prompt,
-            messages=[
-                {"role": "user", "content": raw_transcript}
-            ]
-        )
-        summary_text = message.content[0].text
-
-        # --- Step 4: Storage Update ---
-        record = db.query(VideoRecord).filter(VideoRecord.id == record_id).first()
-        if record:
-            record.transcript = raw_transcript
-            record.summary = summary_text
-            record.status = "completed"
-            db.commit()
-
-    except Exception as e:
-        # Log the error in production. Mark status as failed so client doesn't poll forever.
-        print(f"Background Task Failed for {record_id}: {str(e)}")
-        record = db.query(VideoRecord).filter(VideoRecord.id == record_id).first()
-        if record:
-            record.status = "failed"
-            db.commit()
-
-    finally:
-        db.close()
-        # --- Step 5: Cleanup ---
-        if audio_path and os.path.exists(audio_path):
-            try:
-                os.remove(audio_path)
-            except OSError:
-                pass 
-
-# ---------------------------------------------------------------------
-# 4. FastAPI Routing Application
+# 1. FastAPI Routing Application
 # ---------------------------------------------------------------------
 app = FastAPI(title="Nexus.yt Video Processing Engine")
 

@@ -66,9 +66,9 @@ def pipeline_process_video(record_id: str, url: str):
         )
         
         message = anthropic_client.messages.create(
-            model="claude-3-5-sonnet-20240620",
+            model="claude-haiku-4-5-20251001",
             max_tokens=1500,
-            temperature=0.3,
+            temperature=0.1,
             system=system_prompt,
             messages=[
                 {"role": "user", "content": raw_transcript}
@@ -101,11 +101,11 @@ def pipeline_process_video(record_id: str, url: str):
             except OSError:
                 pass 
 
-if __name__ == "__main__":
-    # Replace these with real test values
-    TEST_RECORD_ID = "1" 
-    TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+# if __name__ == "__main__":
+#     # Replace these with real test values
+#     TEST_RECORD_ID = "1" 
+#     TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
     
-    print(f"Starting test for record {TEST_RECORD_ID}...")
-    pipeline_process_video(TEST_RECORD_ID, TEST_URL)
-    print("Process complete.")
+#     print(f"Starting test for record {TEST_RECORD_ID}...")
+#     pipeline_process_video(TEST_RECORD_ID, TEST_URL)
+#     print("Process complete.")

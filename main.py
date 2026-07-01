@@ -64,10 +64,7 @@ async def process_video(
         yt_id = extract_youtube_id(payload.youtube_url)
         
         # Check if user already have this video in the database
-        existing_record = db.query(VideoRecord).filter(
-            VideoRecord.youtube_id == yt_id,
-            VideoRecord.user_id == user_id
-        ).first()
+        existing_record = db.query(VideoRecord).filter(VideoRecord.youtube_id == yt_id,VideoRecord.user_id == user_id).first()
         
         if existing_record:
             # Re-trigger background task if it failed previously
@@ -89,7 +86,7 @@ async def process_video(
         db.commit()
         db.refresh(new_record) # @dev what does this?
 
-        background_tasks.add_task(pipeline_process_video, new_record.id, payload.youtube_url) # @dev what happen if this spawn fails?
+        background_tasks.add_task(pipeline_process_video, new_record.id, payload.youtube_url) # @dev what happen if this spawn fails? Previous register will be 4ever pending, should make this first or undo the change on the failure handling block
 
         return {"video_id": new_record.id, "status": new_record.status}
 

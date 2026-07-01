@@ -38,3 +38,133 @@ When you need to add a feature (e.g., adding a provider column to VideoRecord or
 4. Deploy the changes: Run `alembic upgrade head`.
 
 **NOTE:** In a production CI/CD pipeline, your deployment pipeline should automatically trigger `alembic upgrade head` before booting up the new FastAPI application instance.
+
+
+
+**App Flow**
+```mermaid
+sequenceDiagram
+    autonumber
+    
+    participant Client as Client
+    participant API as Nexus API
+    participant YT_DLP as YT_DLP
+    participant Groq as Groq API (Whisper)
+    participant Claude as Anthropic API (Claude)
+    participant DB as Database
+
+    Client->>API: POST /api/summarize {youtube_url}
+    activate API
+    
+    Note over API, Claude: Third-Party Pipeline Execution
+    
+    API->>YT_DLP: Request audio stream & metadata
+    activate YT_DLP
+    YT_DLP-->>API: Audio data returned
+    deactivate YT_DLP
+    
+    API->>Groq: POST /v1/audio/transcriptions
+    activate Groq
+    Note right of API: Send audio buffer for transcription
+    Groq-->>API: Return raw transcript text
+    deactivate Groq
+    
+    API->>Claude: POST /v1/messages
+    activate Claude
+    Note right of API: Send transcript with summarization prompt
+    Claude-->>API: Return structured knowledge summary
+    deactivate Claude
+    
+    API->>DB: Insert processed transcript & summary
+    activate DB
+    DB-->>API: Transaction Success
+    deactivate DB
+    
+    API-->>Client: 200 OK (JSON Structured Summary)
+    deactivate API
+```
+
+```mermaid
+sequenceDiagram
+    autonumber
+    
+    participant Client as Client
+    participant API as Nexus API
+    participant DB as Database
+    participant Pipeline as Background Pipeline
+    
+    %% Initial Request
+    Client->>API: POST /api/summarize {youtube_url}
+    activate API
+    
+    API-)Pipeline: Trigger async execution
+    Note right of API: Non-blocking call (fire-and-forget)
+
+    API->>DB: Create job record (status: 'processing')
+    activate DB
+    DB-->>API: Return job_id
+    deactivate DB
+    
+    API-->>Client: 202 Accepted {job_id, status: 'processing'}
+    deactivate API
+    
+    %% Polling / Checking Status
+    loop Polling for Results
+        Client->>API: GET /api/summarize/{job_id}
+        activate API
+        
+        API->>DB: Query job status
+        activate DB
+        DB-->>API: Return status (and data if complete)
+        deactivate DB
+        
+        alt is processing
+            API-->>Client: 200 OK {status: 'processing'}
+        else is completed
+            API-->>Client: 200 OK {status: 'completed', data: JSON Summary}
+        end
+        deactivate API
+    end
+```
+
+
+```mermaid
+sequenceDiagram
+    autonumber
+    
+    participant Pipeline as Background Pipeline
+    participant YT_DLP as Local YT_DLP
+    participant Groq as Groq API (Whisper)
+    participant Claude as Anthropic API (Claude)
+    participant DB as Database
+    
+    Note over Pipeline: Pipeline triggered with {job_id, youtube_url}
+    activate Pipeline
+    
+    %% Audio Extraction
+    Pipeline->>YT_DLP: Extract audio stream & metadata
+    activate YT_DLP
+    Note right of Pipeline: Local execution, no third-party API
+    YT_DLP-->>Pipeline: Audio buffer returned
+    deactivate YT_DLP
+    
+    %% Transcription
+    Pipeline->>Groq: POST /v1/audio/transcriptions (Audio buffer)
+    activate Groq
+    Groq-->>Pipeline: Return raw transcript text
+    deactivate Groq
+    
+    %% Summarization
+    Pipeline->>Claude: POST /v1/messages (Transcript + Prompt)
+    activate Claude
+    Claude-->>Pipeline: Return structured knowledge summary
+    deactivate Claude
+    
+    %% Persistence
+    Pipeline->>DB: Update {job_id} (Save transcript & summary, set status: 'completed')
+    activate DB
+    DB-->>Pipeline: Transaction Success
+    deactivate DB
+    
+    deactivate Pipeline
+```

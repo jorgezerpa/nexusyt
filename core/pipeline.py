@@ -12,6 +12,7 @@ from models import VideoRecord
 # ---------------------------------------------------------------------
 # Core Background Pipeline Function -> MAIN FUNCTION. This is the heart of the product. 
 # ---------------------------------------------------------------------
+# @dev how to handle the temp file path on a server? or if I deployed on cloud or using a container?
 # @dev atually, if not prev registered, it just gonna lose all the work? will not be better to assert for id existance first?
 def pipeline_process_video(record_id: str, url: str):
     # @dev how is this handling failures on any step?
@@ -99,3 +100,12 @@ def pipeline_process_video(record_id: str, url: str):
                 os.remove(audio_path)
             except OSError:
                 pass 
+
+if __name__ == "__main__":
+    # Replace these with real test values
+    TEST_RECORD_ID = "1" 
+    TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+    
+    print(f"Starting test for record {TEST_RECORD_ID}...")
+    pipeline_process_video(TEST_RECORD_ID, TEST_URL)
+    print("Process complete.")

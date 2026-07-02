@@ -86,7 +86,7 @@ def pipeline_process_video(record_id: str, url: str):
 
     except Exception as e:
         # Log the error in production. Mark status as failed so client doesn't poll forever.
-        print(f"Background Task Failed for {record_id}: {str(e)}")
+        print(f"Pipeline failed for: {record_id}: {str(e)}")
         record = db.query(VideoRecord).filter(VideoRecord.id == record_id).first()
         if record:
             record.status = "failed"
@@ -103,8 +103,8 @@ def pipeline_process_video(record_id: str, url: str):
 
 # if __name__ == "__main__":
 #     # Replace these with real test values
-#     TEST_RECORD_ID = "1" 
-#     TEST_URL = "https://www.youtube.com/watch?v=dQw4w9WgXcQ"
+#     TEST_RECORD_ID = "c6c3c92b-4738-4402-b39c-79443ebb87a6" 
+#     TEST_URL = "https://www.youtube.com/watch?v=14jd95oShgI"
     
 #     print(f"Starting test for record {TEST_RECORD_ID}...")
 #     pipeline_process_video(TEST_RECORD_ID, TEST_URL)

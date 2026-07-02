@@ -1,5 +1,5 @@
 from dotenv import load_dotenv
-from fastapi import FastAPI, HTTPException, status, BackgroundTasks, Depends
+from fastapi import FastAPI, HTTPException, status, Depends
 from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from anthropic import Anthropic
 import jwt
@@ -53,7 +53,6 @@ app = FastAPI(title="Nexus.yt Video Processing Engine")
 @app.post("/api/process", response_model=ProcessInitResponse, status_code=status.HTTP_202_ACCEPTED)
 async def process_video(
     payload: ProcessRequest, 
-    background_tasks: BackgroundTasks, # @dev how is exactly working the background task stuff?
     user_id: str = Depends(get_current_user_id)
     ): 
     """
@@ -71,7 +70,7 @@ async def process_video(
             if existing_record.status == "failed":
                 existing_record.status = "processing"
                 db.commit() # @dev what is this doing?
-                background_tasks.add_task(pipeline_process_video, existing_record.id, payload.youtube_url)
+                await pipeline_process_video(existing_record.id, payload.youtube_url)
             
             return {"video_id": existing_record.id, "status": existing_record.status}
 
@@ -86,7 +85,7 @@ async def process_video(
         db.commit()
         db.refresh(new_record) # @dev what does this?
 
-        background_tasks.add_task(pipeline_process_video, new_record.id, payload.youtube_url) # @dev what happen if this spawn fails? Previous register will be 4ever pending, should make this first or undo the change on the failure handling block
+        pipeline_process_video(new_record.id, payload.youtube_url) # @dev what happen if this spawn fails? Previous register will be 4ever pending, should make this first or undo the change on the failure handling block
 
         return {"video_id": new_record.id, "status": new_record.status}
 

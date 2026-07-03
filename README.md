@@ -30,6 +30,11 @@ nexusyt/
 4. Generate Your Initial Migration File -> `alembic revision --autogenerate -m "initial_schema`
 5. Execute the migration `alembic upgrade head`
 
+## Container setup 
+1. Create and configure `Dockerfile` and `dockerignore`
+2. Build image with `docker build -t nexusyt .`
+3. Use command `docker run -d -p 8000:8000 --env-file .env nexusyt` to run the container
+
 ### How to handle changes from now on (Migrations)
 When you need to add a feature (e.g., adding a provider column to VideoRecord or creating a new table):
 1. Modify `models.py`: Make the code modifications directly to your declarative database models.

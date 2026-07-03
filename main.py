@@ -51,7 +51,7 @@ def get_current_user_id(credentials: HTTPAuthorizationCredentials = Depends(secu
 app = FastAPI(title="Nexus.yt Video Processing Engine")
 
 @app.post("/api/process", response_model=ProcessInitResponse, status_code=status.HTTP_202_ACCEPTED)
-async def process_video(
+def process_video(
     payload: ProcessRequest, 
     user_id: str = Depends(get_current_user_id)
     ): 
@@ -70,7 +70,7 @@ async def process_video(
             if existing_record.status == "failed":
                 existing_record.status = "processing"
                 db.commit() # @dev what is this doing?
-                await pipeline_process_video(existing_record.id, payload.youtube_url)
+                pipeline_process_video(existing_record.id, payload.youtube_url)
             
             return {"video_id": existing_record.id, "status": existing_record.status}
 

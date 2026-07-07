@@ -50,13 +50,15 @@ def measure_exact_traffic(url: str) -> dict:
 
 if __name__ == "__main__":
     # to ensure the system-wide network counters are accurate.
-    proxy_consumption = measure_exact_traffic(url="https://www.youtube.com/watch?v=zIwLWfaAg-8")
+    proxy_consumption = measure_exact_traffic(url="https://www.youtube.com/watch?v=x2i5Jp7mdMc&")
     minute_cost = proxy_consumption.get('cost_per_minute_real_life')
 
 
     print("Domestic Proxy Pool Costs Analisis")
     print("Most basic (and expensive) plans charges 7.5$ per GB of traffic.")
     print("- Stimated costs per video duration:")
+
+    print(f"  - Total traffic {proxy_consumption.get('total_traffic_bytes')}")
     print(f"  - 1 minute: ${minute_cost:.6f}")
     print(f"  - 5 minutes: ${minute_cost*5:.6f}")
     print(f"  - 30 minutes: ${minute_cost*30:.6f}")

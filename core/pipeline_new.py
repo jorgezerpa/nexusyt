@@ -1,6 +1,8 @@
 import os
 import logging
 
+from core.captions_service import fetch_youtube_captions as _fetch_youtube_captions
+
 # Set up basic logging
 logger = logging.getLogger(__name__)
 
@@ -65,7 +67,7 @@ def process_link(youtube_url: str) -> dict:
             "status": "error",
             "message": "Transcription failed. No usable text obtained."
         }
-
+    
     # ==========================================
     # PATH 3: AI Understanding Layer (Claude)
     # ==========================================
@@ -88,19 +90,17 @@ def process_link(youtube_url: str) -> dict:
             "status": "error",
             "message": "Failed to analyze transcript."
         }
+    
+
+
+if __name__ == "__main__":
+    transcript = process_link(youtube_url="https://www.youtube.com/watch?v=BHY0FxzoKZE")
+    print(transcript)
 
 
 # ==========================================
 # HELPER STUBS (To be replaced with real SDKs)
 # ==========================================
-
-def _fetch_youtube_captions(url: str) -> str | None:
-    """
-    Implementation target: Use `youtube-transcript-api`.
-    Returns a single concatenated string of the transcript, or None if disabled.
-    """
-    # TODO: Implement youtube-transcript-api logic here
-    pass
 
 def _download_audio_temporarily(url: str) -> str | None:
     """

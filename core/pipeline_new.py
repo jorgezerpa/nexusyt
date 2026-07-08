@@ -2,6 +2,7 @@ import os
 import logging
 
 from core.captions_service import fetch_youtube_captions as _fetch_youtube_captions
+from core.audio_to_text_service import download_audio_temporarily, transcribe_with_groq as _download_audio_temporarily, _transcribe_with_groq
 
 # Set up basic logging
 logger = logging.getLogger(__name__)
@@ -102,23 +103,6 @@ if __name__ == "__main__":
 # HELPER STUBS (To be replaced with real SDKs)
 # ==========================================
 
-def _download_audio_temporarily(url: str) -> str | None:
-    """
-    Implementation target: Use `yt-dlp` via Python wrapper.
-    Configured to extract lowest quality audio (e.g., m4a/opus) to a /tmp/ folder.
-    Must return the exact file path to the downloaded temp file.
-    """
-    # TODO: Implement yt-dlp logic here
-    pass
-
-def _transcribe_with_groq(audio_path: str) -> str:
-    """
-    Implementation target: Groq Python SDK.
-    Model: 'whisper-large-v3' (or turbo).
-    Sends the audio file and returns the raw text transcript.
-    """
-    # TODO: Implement Groq SDK call here
-    pass
 
 def _generate_summary_with_claude(transcript_text: str) -> dict:
     """

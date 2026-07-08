@@ -2,7 +2,8 @@ import os
 import logging
 
 from core.captions_service import fetch_youtube_captions as _fetch_youtube_captions
-from core.audio_to_text_service import download_audio_temporarily, transcribe_with_groq as _download_audio_temporarily, _transcribe_with_groq
+from core.audio_to_text_service import download_audio_temporarily as _download_audio_temporarily
+from core.audio_to_text_service import transcribe_with_groq as _transcribe_with_groq 
 from core.claude_summary_service import generate_summary_with_claude as _generate_summary_with_claude
 
 # Set up basic logging
@@ -18,7 +19,7 @@ def process_link(youtube_url: str) -> dict:
     3. Analyze with Claude Haiku.
     4. Enforce strict deletion of raw media.
     """
-    logger.info(f"Starting pipeline for URL: {youtube_url}")
+    print(f"Starting pipeline for URL: {youtube_url}")
     
     transcript = None
     retrieval_method = None
@@ -28,7 +29,7 @@ def process_link(youtube_url: str) -> dict:
         # ==========================================
         # PATH 1: Captions-First (Cheapest & Fastest)
         # ==========================================
-        logger.info("Attempting Path 1: Captions-first retrieval...")
+        print("Attempting Path 1: Captions-first retrieval...")
         transcript = _fetch_youtube_captions(youtube_url)
         
         if transcript:
@@ -65,6 +66,7 @@ def process_link(youtube_url: str) -> dict:
             logger.info(f"Compliance cleanup: Deleted temporary audio at {temp_audio_path}")
 
     if not transcript:
+        logger.info("Transcription failed. No usable text obtained.")
         return {
             "status": "error",
             "message": "Transcription failed. No usable text obtained."

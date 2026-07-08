@@ -5,7 +5,6 @@ from youtube_transcript_api.formatters import TextFormatter
 
 import psutil
 
-PROXY_COST_PER_GB = 7.5 # 7.5$
 
 # Set up logging for this module
 logger = logging.getLogger(__name__)
@@ -32,25 +31,11 @@ def fetch_youtube_captions(youtube_url: str) -> str | None:
         return None
         
     try:
-        ytt_api = YouTubeTranscriptApi()
         # Fetch the transcript. By default, it tries English first. 
         # You can add a list of fallbacks using languages=['en', 'es', 'fr']
-        net_before = psutil.net_io_counters()
+        ytt_api = YouTubeTranscriptApi()
         transcript_raw = ytt_api.fetch(video_id=video_id)
-        net_after = psutil.net_io_counters()
 
-        bytes_sent = net_after.bytes_sent - net_before.bytes_sent
-        bytes_recv = net_after.bytes_recv - net_before.bytes_recv
-        extraction_traffic = bytes_sent + bytes_recv
-
-        total_gb = extraction_traffic / (1024**3)
-        exact_cost = total_gb * PROXY_COST_PER_GB
-
-        print(f"{extraction_traffic}")
-        print(f"exact cost {exact_cost}")
-        print(f"cost per minute {exact_cost/13}")
-        print(f"cost per hour {(exact_cost/13)*60}")
-        
         # Use the built-in TextFormatter to convert the JSON-like list into a clean string
         formatter = TextFormatter()
         transcript_string = formatter.format_transcript(transcript_raw)
@@ -59,13 +44,13 @@ def fetch_youtube_captions(youtube_url: str) -> str | None:
         # to ensure it's token-efficient for the downstream Claude analysis
         clean_transcript = " ".join(transcript_string.split())
         
+        if not clean_transcript: return None
         return clean_transcript
         
     except Exception as e:
         # Broad exception catch handles TranscriptsDisabled, NoTranscriptFound, VideoUnavailable, etc.
         # Logged as INFO instead of ERROR because falling back to Whisper is an expected pipeline path.
         logger.info(f"Captions unavailable for video {video_id}. Reason: {str(e)}")
-        print(f"Captions unavailable for video {video_id}. Reason: {str(e)}")
         return None
     
 

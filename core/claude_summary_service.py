@@ -1,12 +1,5 @@
 from dotenv import load_dotenv
-import os
-import tempfile
-import yt_dlp
-from groq import Groq
 from anthropic import Anthropic
-##
-from database import SessionLocal
-from models import VideoRecord
 
 load_dotenv()
 
@@ -27,7 +20,7 @@ def generate_summary_with_claude(transcript_text: str) -> str:
     message = anthropic_client.messages.create(
         model="claude-haiku-4-5-20251001",
         max_tokens=1500,
-        temperature=0.1,
+        temperature=0.3,
         system=system_prompt,
         messages=[
             {"role": "user", "content": transcript_text}

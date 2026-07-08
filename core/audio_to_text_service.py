@@ -3,10 +3,6 @@ import os
 import tempfile
 import yt_dlp
 from groq import Groq
-from anthropic import Anthropic
-##
-from database import SessionLocal
-from models import VideoRecord
 
 load_dotenv() 
 

@@ -3,6 +3,7 @@ import logging
 
 from core.captions_service import fetch_youtube_captions as _fetch_youtube_captions
 from core.audio_to_text_service import download_audio_temporarily, transcribe_with_groq as _download_audio_temporarily, _transcribe_with_groq
+from core.claude_summary_service import generate_summary_with_claude as _generate_summary_with_claude
 
 # Set up basic logging
 logger = logging.getLogger(__name__)
@@ -74,15 +75,14 @@ def process_link(youtube_url: str) -> dict:
     # ==========================================
     try:
         logger.info("Transcript acquired. Generating insights via Claude Haiku...")
-        analysis_data = _generate_summary_with_claude(transcript)
+        summary = _generate_summary_with_claude(transcript)
         
         return {
             "status": "success",
             "retrieval_method": retrieval_method,
             "data": {
                 "transcript": transcript,
-                "summary": analysis_data.get("summary", ""),
-                "key_points": analysis_data.get("key_points", []),
+                "summary": summary,
             }
         }
     except Exception as e:
@@ -99,16 +99,5 @@ if __name__ == "__main__":
     print(transcript)
 
 
-# ==========================================
-# HELPER STUBS (To be replaced with real SDKs)
-# ==========================================
 
 
-def _generate_summary_with_claude(transcript_text: str) -> dict:
-    """
-    Implementation target: Anthropic Python SDK.
-    Model: 'claude-3-haiku-20240307' (or 4.5).
-    Instructs the LLM to output a JSON payload containing 'summary' and 'key_points'.
-    """
-    # TODO: Implement Anthropic SDK call here, returning a parsed JSON dictionary.
-    pass
